@@ -56,7 +56,8 @@ class GCPCloudProvider(BaseCloudProvider):
         "?audience={audience}&format=full&licenses=TRUE"
     )
 
-    # Token (metadata) expires within one hour. Thus it is save to cache the token.
+    # Token (metadata) expires usually within one hour. This is default value. Real value
+    # is contained in the JWT token.
     CLOUD_PROVIDER_METADATA_TTL = 3600
 
     CLOUD_PROVIDER_TOKEN_TTL = CLOUD_PROVIDER_METADATA_TTL
@@ -165,11 +166,31 @@ class GCPCloudProvider(BaseCloudProvider):
         :return: String with token or None
         """
         token = self._get_data_from_server(data_type="token", url=self.CLOUD_PROVIDER_METADATA_URL)
+
         if token is not None:
+            ttl = self.CLOUD_PROVIDER_TOKEN_TTL
+            ctime = time.time()
+
+            # Try to get expiration time from JWT token and the time, when the token was created
+            jose_header, metadata, encoded_signature = self.decode_jwt(token)
+            if metadata is not None:
+                if "exp" in metadata and 'iat' in metadata:
+                    iat_time = metadata['iat']
+                    exp_time = metadata["exp"]
+                    if abs(ctime - iat_time) > 1:
+                        log.debug(f"GCP: JWT token, big diff in ctime: {ctime} and iat: {iat_time}")
+                    ttl = exp_time - ctime
+                    log.debug(f"GCP: JWT token, exp: {exp_time}, iat: {iat_time}, TTL: {ttl}")
+                else:
+                    log.debug("GCP JWT token does not contain expiration time")
+            else:
+                log.debug("Unable to decode JWT token")
+
             self._token = token
-            self._token_ctime = time.time()
-            self._token_ttl = self.CLOUD_PROVIDER_TOKEN_TTL
+            self._token_ctime = ctime
+            self._token_ttl = ttl
             self._write_token_to_cache_file()
+
         return token
 
     def _get_signature_from_server(self) -> None:
